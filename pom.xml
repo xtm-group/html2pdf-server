@@ -14,7 +14,7 @@
 	</modules>
 
 	<artifactId>html2pdf-server</artifactId>
-	<version>10.7.0-SNAPSHOT</version>
+	<version>10.8.0-SNAPSHOT</version>
 	<name>html2pdf-server</name>
 	<packaging>pom</packaging>
 
@@ -45,7 +45,7 @@
 	<scm>
 		<connection>scm:git:ssh://git@github.com/xtrf/html2pdf-server.git</connection>
 		<developerConnection>scm:git:ssh://git@github.com/xtrf/html2pdf-server.git</developerConnection>
-		<tag>10.7-dev</tag>
+		<tag>master</tag>
 	</scm>
 
 	<build>
