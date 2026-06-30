@@ -21,7 +21,7 @@
 	<properties>
 		<maven.site.skip>true</maven.site.skip>
 		<maven.site.deploy.skip>true</maven.site.deploy.skip>
-		<xtrf.test.utils.version>10.7.0-SNAPSHOT</xtrf.test.utils.version>
+		<xtrf.test.utils.version>10.7.0</xtrf.test.utils.version>
 
 		<flying.saucer.pdf.openpdf.version>9.1.22</flying.saucer.pdf.openpdf.version>
 		<junit.jupiter.api.version>5.6.2</junit.jupiter.api.version>
