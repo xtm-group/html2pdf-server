@@ -3,7 +3,7 @@
     <parent>
         <artifactId>html2pdf-server</artifactId>
         <groupId>eu.xtrf</groupId>
-        <version>10.8.0-SNAPSHOT</version>
+        <version>10.9.0-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
