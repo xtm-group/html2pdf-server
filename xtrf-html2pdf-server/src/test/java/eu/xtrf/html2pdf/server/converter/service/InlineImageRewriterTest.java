@@ -157,4 +157,30 @@ public class InlineImageRewriterTest {
         assertNotNull(undecodable.css());
     }
 
+    /**
+     * CSS function names are case-insensitive and Flying Saucer's lexer is generated with
+     * {@code %ignorecase}, so a hand-edited theme that writes {@code URL(} or {@code Url(} still puts
+     * its background through the rasterizer. The rewriter must lift those too, or the guard is
+     * bypassed by a change of case.
+     */
+    @Test
+    public void should_lift_a_background_whose_url_token_is_not_lowercase() {
+        // given
+        byte[] upper = png(64, 48, false);
+        byte[] mixed = png(32, 24, false);
+        String css = "@page { background-image: URL(data:image/gif;base64," + Base64.getEncoder().encodeToString(upper) + "); }\n"
+                + "body { background-image: Url('data:image/gif;base64," + Base64.getEncoder().encodeToString(mixed) + "'); }";
+
+        // when
+        PreparedStyles prepared = rewriter(true).rewrite(css, RESOURCE_PATH);
+
+        // then
+        assertEquals(prepared.backgrounds().size(), 2);
+        assertFalse(prepared.css().contains("data:"), "an upper- or mixed-case url( token must not let the payload through to the renderer");
+        assertTrue(prepared.css().contains("url(" + InlineImageRewriter.SENTINEL_PREFIX + "0" + InlineImageRewriter.SENTINEL_SUFFIX + ")"));
+        assertTrue(prepared.css().contains("url(" + InlineImageRewriter.SENTINEL_PREFIX + "1" + InlineImageRewriter.SENTINEL_SUFFIX + ")"));
+        assertEquals(prepared.backgrounds().get(InlineImageRewriter.SENTINEL_PREFIX + "0" + InlineImageRewriter.SENTINEL_SUFFIX).bytes(), upper);
+        assertEquals(prepared.backgrounds().get(InlineImageRewriter.SENTINEL_PREFIX + "1" + InlineImageRewriter.SENTINEL_SUFFIX).bytes(), mixed);
+    }
+
 }

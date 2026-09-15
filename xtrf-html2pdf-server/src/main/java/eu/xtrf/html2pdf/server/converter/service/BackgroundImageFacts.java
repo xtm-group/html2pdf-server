@@ -50,7 +50,22 @@ class BackgroundImageFacts {
      * rasterizes would blank a legitimate background for no heap reason.
      */
     boolean decodedAsRaster() {
-        return !("jpeg".equals(formatName) || "jpg".equals(formatName) || "jpeg2000".equals(formatName));
+        return rasterizedByOpenPdf(formatName);
+    }
+
+    /**
+     * Decided on the ImageIO format name with case and whitespace removed, because readers spell
+     * the same format differently: the JDK reader reports {@code JPEG}, and a JPEG 2000 plugin such
+     * as JAI reports {@code jpeg 2000} with a space. The JDK itself ships no JPEG 2000 reader, so on
+     * a plain JVM such an image reads as {@code null} and is passed through unchanged anyway.
+     */
+    static boolean rasterizedByOpenPdf(String formatName) {
+        String normalised = normalise(formatName);
+        return !("jpeg".equals(normalised) || "jpg".equals(normalised) || "jpeg2000".equals(normalised));
+    }
+
+    private static String normalise(String formatName) {
+        return formatName == null ? "" : formatName.toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
     }
 
     String describe() {
@@ -90,8 +105,7 @@ class BackgroundImageFacts {
     }
 
     private static BackgroundImageFacts fromReader(ImageReader reader) throws IOException {
-        return new BackgroundImageFacts(reader.getWidth(0), reader.getHeight(0),
-                reader.getFormatName().toLowerCase(Locale.ROOT));
+        return new BackgroundImageFacts(reader.getWidth(0), reader.getHeight(0), normalise(reader.getFormatName()));
     }
 
 }

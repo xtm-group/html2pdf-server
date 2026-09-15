@@ -5,6 +5,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.io.input.CharSequenceReader;
 import org.apache.commons.io.input.ReaderInputStream;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -32,6 +33,13 @@ class InlineImageRewriter {
     static final String SENTINEL_PREFIX = "xtrf-background-";
     static final String SENTINEL_SUFFIX = ".png";
 
+    /**
+     * Matched without regard to case: CSS function names are case-insensitive and Flying Saucer's
+     * lexer is generated with {@code %ignorecase}, so {@code URL(data:...)} is a background it will
+     * decode. The {@code data:} scheme and the {@code ;base64,} marker are matched exactly, because
+     * Flying Saucer's own {@code ImageUtil} matches them exactly - a variant it does not recognise
+     * as an embedded image never reaches the rasterizer, so there is nothing there to bound.
+     */
     private static final String URL_TOKEN = "url(";
     private static final String DATA_SCHEME = "data:";
     private static final String BASE64_MARKER = ";base64,";
@@ -58,7 +66,7 @@ class InlineImageRewriter {
         int copiedUpTo = 0;
         int searchFrom = 0;
         while (true) {
-            int urlAt = css.indexOf(URL_TOKEN, searchFrom);
+            int urlAt = StringUtils.indexOfIgnoreCase(css, URL_TOKEN, searchFrom);
             if (urlAt < 0) {
                 break;
             }
