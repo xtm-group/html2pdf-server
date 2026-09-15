@@ -143,4 +143,19 @@ public class BackgroundImageFactsTest {
         }
     }
 
+    /**
+     * ImageIO readers spell one format several ways - the JDK reader reports {@code JPEG}, a JAI
+     * JPEG 2000 plugin reports {@code jpeg 2000} with a space - and OpenPDF embeds every one of them
+     * compressed, so every spelling must be kept off the pixel cap.
+     */
+    @Test
+    public void should_recognise_every_spelling_of_jpeg_and_jpeg_2000_as_formats_openpdf_never_rasterizes() {
+        for (String spelling : new String[] {"JPEG", "jpeg", "JPG", "jpg", "jpeg2000", "JPEG2000", "jpeg 2000", "JPEG 2000"}) {
+            assertFalse(BackgroundImageFacts.rasterizedByOpenPdf(spelling), spelling + " is embedded compressed by OpenPDF");
+        }
+        for (String spelling : new String[] {"png", "PNG", "gif", "bmp", "tiff", "wbmp", "", null}) {
+            assertTrue(BackgroundImageFacts.rasterizedByOpenPdf(spelling), spelling + " is rasterized by OpenPDF");
+        }
+    }
+
 }
