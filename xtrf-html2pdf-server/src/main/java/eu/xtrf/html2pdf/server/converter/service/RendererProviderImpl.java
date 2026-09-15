@@ -10,10 +10,12 @@ import java.io.IOException;
 @Component
 public class RendererProviderImpl implements RendererProvider {
     private final FontService fontService;
+    private final InlineImageRewriter inlineImageRewriter;
 
     @Autowired
-    public RendererProviderImpl(FontService fontService) {
+    public RendererProviderImpl(FontService fontService, InlineImageRewriter inlineImageRewriter) {
         this.fontService = fontService;
+        this.inlineImageRewriter = inlineImageRewriter;
     }
 
     @Override
@@ -22,8 +24,9 @@ public class RendererProviderImpl implements RendererProvider {
         SharedContext sharedContext = renderer.getSharedContext();
         sharedContext.setPrint(true);
         sharedContext.setInteractive(false);
-        sharedContext.setUserAgentCallback(new ConverterOpenPdfUserAgent(renderer.getOutputDevice(), sharedContext, resourcePath, systemDomain, styleCss,
-                allowResourcesFromDiskAndExternalDomainForGeneratingDocs));
+        InlineImageRewriter.PreparedStyles prepared = inlineImageRewriter.rewrite(styleCss, resourcePath);
+        sharedContext.setUserAgentCallback(new ConverterOpenPdfUserAgent(renderer.getOutputDevice(), sharedContext, resourcePath, systemDomain, prepared.css(),
+                prepared.backgrounds(), allowResourcesFromDiskAndExternalDomainForGeneratingDocs));
         sharedContext.getTextRenderer().setSmoothingThreshold(0);
 
         fontService.loadFontsToRendererFromResources(renderer, resourcePath);
