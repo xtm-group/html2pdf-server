@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.decode;
 import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.dimensionsOf;
 import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.jpeg;
+import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.noisePng;
 import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.png;
 import static eu.xtrf.html2pdf.server.converter.service.BackgroundImageTestFixtures.pngHeaderOnly;
 import static org.testng.Assert.assertEquals;
@@ -39,7 +40,21 @@ public class BackgroundImageOptimizerTest {
     private static final String CORRELATION_ID = "xdev-6073";
 
     private static BackgroundImageOptimizer optimizer(long optimizeAbovePixels, long maxPixels) {
-        return new BackgroundImageOptimizer(true, optimizeAbovePixels, TARGET, maxPixels, 16);
+        return new BackgroundImageOptimizer(true, optimizeAbovePixels, TARGET, maxPixels, BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES);
+    }
+
+    private static BackgroundImageOptimizer optimizerWithBudget(long maxCacheBytes) {
+        return new BackgroundImageOptimizer(true, PIXELS - 1, TARGET, 1_000_000L, maxCacheBytes);
+    }
+
+    /**
+     * The byte size of the PNG the optimizer serves for {@code source}, measured on a throwaway
+     * instance so a test can size its budget from the transform rather than guess at PNG output.
+     */
+    private static long transformedSize(byte[] source) {
+        PreparedBackground prepared = optimizer(PIXELS - 1, 1_000_000L).optimize(source, CORRELATION_ID);
+        assertEquals(prepared.verdict(), Verdict.DOWNSCALED, "the fixture must be one the optimizer transforms");
+        return prepared.bytes().length;
     }
 
     @Test
@@ -211,20 +226,91 @@ public class BackgroundImageOptimizerTest {
     }
 
     @Test
-    public void should_evict_the_eldest_entry_when_the_cache_is_full() {
-        // given a cache with room for one transformed background
-        BackgroundImageOptimizer optimizer = new BackgroundImageOptimizer(true, PIXELS - 1, TARGET, 1_000_000L, 1);
+    public void should_evict_the_least_recently_used_transform_when_the_byte_budget_is_full() {
+        // given a budget with room for either transformed background, but not for both
         byte[] first = png(400, 300, false);
         byte[] second = png(400, 300, true);
+        long budget = Math.max(transformedSize(first), transformedSize(second));
+        BackgroundImageOptimizer optimizer = optimizerWithBudget(budget);
 
         // when
         PreparedBackground firstRun = optimizer.optimize(first, CORRELATION_ID);
-        optimizer.optimize(second, CORRELATION_ID);
+        PreparedBackground secondRun = optimizer.optimize(second, CORRELATION_ID);
+        PreparedBackground secondAgain = optimizer.optimize(second.clone(), CORRELATION_ID);
         PreparedBackground firstAgain = optimizer.optimize(first.clone(), CORRELATION_ID);
 
         // then
         assertEquals(firstRun.verdict(), Verdict.DOWNSCALED);
-        assertNotSame(firstAgain, firstRun, "the cache is bounded, so the eldest transform must be gone");
+        assertSame(secondAgain, secondRun, "the newest transform fits the budget on its own and must be kept");
+        assertNotSame(firstAgain, firstRun, "the cache is bounded by bytes, so the eldest transform must be gone");
+        assertTrue(optimizer.cachedBytes() <= budget, "held " + optimizer.cachedBytes() + " bytes against a budget of " + budget);
+    }
+
+    /**
+     * The reason the bound is bytes and not entries: one transform that does not compress can
+     * outweigh many that do, so putting it must evict as many entries as its size demands.
+     */
+    @Test
+    public void should_evict_as_many_transforms_as_a_new_one_needs_to_fit() {
+        // given two flat backgrounds that compress to almost nothing and one noisy one that does not
+        byte[] flatOne = png(400, 300, false);
+        byte[] flatTwo = png(400, 300, true);
+        byte[] noisy = noisePng(400, 300);
+        long flatBytes = transformedSize(flatOne) + transformedSize(flatTwo);
+        long noisyBytes = transformedSize(noisy);
+        assertTrue(noisyBytes > flatBytes, "fixture premise: the noisy transform (" + noisyBytes + " B) outweighs both flat ones together (" + flatBytes + " B)");
+        BackgroundImageOptimizer optimizer = optimizerWithBudget(noisyBytes);
+
+        // when
+        PreparedBackground flatOneRun = optimizer.optimize(flatOne, CORRELATION_ID);
+        PreparedBackground flatTwoRun = optimizer.optimize(flatTwo, CORRELATION_ID);
+        long heldBeforeNoisy = optimizer.cachedBytes();
+        PreparedBackground noisyRun = optimizer.optimize(noisy, CORRELATION_ID);
+        long heldAfterNoisy = optimizer.cachedBytes();
+        PreparedBackground flatOneAgain = optimizer.optimize(flatOne.clone(), CORRELATION_ID);
+        PreparedBackground flatTwoAgain = optimizer.optimize(flatTwo.clone(), CORRELATION_ID);
+
+        // then
+        assertEquals(heldBeforeNoisy, flatBytes, "both flat transforms fit the budget together");
+        assertEquals(noisyRun.verdict(), Verdict.DOWNSCALED);
+        assertEquals(heldAfterNoisy, noisyBytes, "the noisy transform must have pushed out both flat ones, not just the eldest");
+        assertNotSame(flatOneAgain, flatOneRun, "the first flat transform was evicted to make room");
+        assertNotSame(flatTwoAgain, flatTwoRun, "the second flat transform was evicted to make room");
+        assertTrue(optimizer.cachedBytes() <= noisyBytes, "the budget holds after every put");
+    }
+
+    @Test
+    public void should_serve_but_not_keep_a_transform_larger_than_the_whole_budget() {
+        // given a budget that holds the flat background and nothing as large as the noisy one
+        byte[] flat = png(400, 300, false);
+        byte[] noisy = noisePng(400, 300);
+        long budget = transformedSize(flat);
+        assertTrue(transformedSize(noisy) > budget, "fixture premise: the noisy transform is larger than the whole budget");
+        BackgroundImageOptimizer optimizer = optimizerWithBudget(budget);
+
+        // when
+        PreparedBackground flatRun = optimizer.optimize(flat, CORRELATION_ID);
+        PreparedBackground noisyRun = optimizer.optimize(noisy, CORRELATION_ID);
+        PreparedBackground noisyAgain = optimizer.optimize(noisy.clone(), CORRELATION_ID);
+        PreparedBackground flatAgain = optimizer.optimize(flat.clone(), CORRELATION_ID);
+
+        // then
+        assertEquals(noisyRun.verdict(), Verdict.DOWNSCALED, "a result too large to cache is still served");
+        assertNotSame(noisyAgain, noisyRun, "a result larger than the whole budget must not be stored");
+        assertSame(flatAgain, flatRun, "an oversized result must not evict the entries that do fit: it would empty the cache and buy back nothing");
+        assertEquals(optimizer.cachedBytes(), budget);
+    }
+
+    /**
+     * Guards the two defaults against drifting apart: a downscale at {@code targetPixels} is a PNG of
+     * at most about four bytes per pixel, and the default budget must hold at least one of them, or
+     * a background that does not compress would be re-decoded on every render.
+     */
+    @Test
+    public void should_default_to_a_budget_that_holds_at_least_one_worst_case_downscale() {
+        long worstCaseDownscale = BackgroundImageOptimizer.DEFAULT_TARGET_PIXELS * 4 * 105 / 100;
+        assertTrue(BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES >= worstCaseDownscale,
+                BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES + " B budget vs " + worstCaseDownscale + " B worst-case downscale");
     }
 
     @Test
@@ -261,27 +347,27 @@ public class BackgroundImageOptimizerTest {
     }
 
     @Test
-    public void should_degrade_rather_than_throw_on_a_hostile_cache_size() {
+    public void should_degrade_rather_than_throw_on_a_hostile_cache_budget() {
         // given
         byte[] source = png(400, 300, false);
 
         // when
-        Map<Integer, Verdict> verdicts = new java.util.LinkedHashMap<>();
-        for (int maxCacheEntries : new int[]{0, -5}) {
-            verdicts.put(maxCacheEntries,
-                    new BackgroundImageOptimizer(true, PIXELS - 1, TARGET, 1_000_000L, maxCacheEntries)
-                            .optimize(source, CORRELATION_ID).verdict());
+        Map<Long, Verdict> verdicts = new java.util.LinkedHashMap<>();
+        for (long maxCacheBytes : new long[]{0L, -5L}) {
+            BackgroundImageOptimizer optimizer = optimizerWithBudget(maxCacheBytes);
+            verdicts.put(maxCacheBytes, optimizer.optimize(source, CORRELATION_ID).verdict());
+            assertEquals(optimizer.cachedBytes(), 0L, "maxCacheBytes=" + maxCacheBytes + " must cache nothing");
         }
 
         // then
         assertEquals(verdicts.size(), 2, "both hostile values must have been exercised");
-        verdicts.forEach((maxCacheEntries, verdict) ->
-                assertEquals(verdict, Verdict.DOWNSCALED, "maxCacheEntries=" + maxCacheEntries + " must still render"));
+        verdicts.forEach((maxCacheBytes, verdict) ->
+                assertEquals(verdict, Verdict.DOWNSCALED, "maxCacheBytes=" + maxCacheBytes + " must still render"));
     }
 
     @Test
     public void should_report_itself_disabled_when_the_feature_flag_is_off() {
-        assertFalse(new BackgroundImageOptimizer(false, PIXELS - 1, TARGET, 1_000_000L, 16).isEnabled());
+        assertFalse(new BackgroundImageOptimizer(false, PIXELS - 1, TARGET, 1_000_000L, BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES).isEnabled());
         assertTrue(optimizer(PIXELS - 1, 1_000_000L).isEnabled());
     }
 
