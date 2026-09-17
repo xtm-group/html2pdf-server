@@ -231,7 +231,7 @@ public class BackgroundImageRenderTest {
     // ---------------------------------------------------------------- fixtures and plumbing
 
     private static BackgroundImageOptimizer optimizer(boolean enabled, long optimizeAbovePixels, long maxPixels) {
-        return new BackgroundImageOptimizer(enabled, optimizeAbovePixels, TARGET, maxPixels, 16);
+        return new BackgroundImageOptimizer(enabled, optimizeAbovePixels, TARGET, maxPixels, BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES);
     }
 
     /**

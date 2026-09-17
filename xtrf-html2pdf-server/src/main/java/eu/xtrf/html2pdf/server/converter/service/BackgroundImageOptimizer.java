@@ -15,7 +15,6 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -27,7 +26,9 @@ import java.util.function.Supplier;
  *
  * Unlike its package neighbours, this bean is a long-lived singleton: {@code RendererProviderImpl}
  * builds a fresh renderer and a fresh user agent for every render, so a per-render cache would be
- * re-paid once per concurrent request. The cache is bounded by entry count and holds only the
+ * re-paid once per concurrent request. The cache is bounded by the bytes it holds, not by an entry
+ * count - a downscaled background is a re-encoded PNG of up to {@code targetPixels}, so a count alone
+ * would still let a handful of entries claim hundreds of megabytes - and it holds only the
  * backgrounds this class transformed, never a source image the caller already owns.
  */
 @Slf4j
@@ -38,12 +39,12 @@ class BackgroundImageOptimizer {
     static final String OPTIMIZE_ABOVE_PROPERTY = "eu.xtrf.html2pdf.image.optimizeAbovePixels";
     static final String TARGET_PIXELS_PROPERTY = "eu.xtrf.html2pdf.image.targetPixels";
     static final String MAX_PIXELS_PROPERTY = "eu.xtrf.html2pdf.image.maxPixels";
-    static final String MAX_CACHE_ENTRIES_PROPERTY = "eu.xtrf.html2pdf.image.maxCacheEntries";
+    static final String MAX_CACHE_BYTES_PROPERTY = "eu.xtrf.html2pdf.image.maxCacheBytes";
 
     static final long DEFAULT_OPTIMIZE_ABOVE_PIXELS = 12_000_000L;
     static final long DEFAULT_TARGET_PIXELS = 8_700_000L;
     static final long DEFAULT_MAX_PIXELS = 30_000_000L;
-    static final int DEFAULT_MAX_CACHE_ENTRIES = 16;
+    static final long DEFAULT_MAX_CACHE_BYTES = 64L * 1024 * 1024;
 
     static final int BLANK_WIDTH = 1200;
     static final int BLANK_HEIGHT = 1800;
@@ -54,7 +55,7 @@ class BackgroundImageOptimizer {
     private final long optimizeAbovePixels;
     private final long targetPixels;
     private final long maxPixels;
-    private final Map<String, PreparedBackground> cache;
+    private final ByteBoundedCache cache;
     private byte[] blank;
 
     BackgroundImageOptimizer() {
@@ -62,15 +63,15 @@ class BackgroundImageOptimizer {
                 Long.getLong(OPTIMIZE_ABOVE_PROPERTY, DEFAULT_OPTIMIZE_ABOVE_PIXELS),
                 Long.getLong(TARGET_PIXELS_PROPERTY, DEFAULT_TARGET_PIXELS),
                 Long.getLong(MAX_PIXELS_PROPERTY, DEFAULT_MAX_PIXELS),
-                Integer.getInteger(MAX_CACHE_ENTRIES_PROPERTY, DEFAULT_MAX_CACHE_ENTRIES));
+                Long.getLong(MAX_CACHE_BYTES_PROPERTY, DEFAULT_MAX_CACHE_BYTES));
     }
 
-    BackgroundImageOptimizer(boolean enabled, long optimizeAbovePixels, long targetPixels, long maxPixels, int maxCacheEntries) {
+    BackgroundImageOptimizer(boolean enabled, long optimizeAbovePixels, long targetPixels, long maxPixels, long maxCacheBytes) {
         this.enabled = enabled;
         this.optimizeAbovePixels = optimizeAbovePixels;
         this.targetPixels = targetPixels;
         this.maxPixels = maxPixels;
-        this.cache = boundedCache(maxCacheEntries);
+        this.cache = new ByteBoundedCache(maxCacheBytes);
     }
 
     /**
@@ -80,6 +81,11 @@ class BackgroundImageOptimizer {
      */
     boolean isEnabled() {
         return enabled;
+    }
+
+    /** Bytes of transformed backgrounds currently held, for diagnostics and tests. */
+    long cachedBytes() {
+        return cache.heldBytes();
     }
 
     /**
@@ -223,13 +229,53 @@ class BackgroundImageOptimizer {
         }
     }
 
-    private static Map<String, PreparedBackground> boundedCache(int maxCacheEntries) {
-        return Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<String, PreparedBackground> eldest) {
-                return size() > maxCacheEntries;
+    /**
+     * An access-ordered map whose bound is the bytes of the PNGs it holds, not their number. A
+     * downscaled background is a re-encoded PNG of up to {@code targetPixels}, close to 35 MB at the
+     * default when the content does not compress, so a count of entries would still let a handful of
+     * them claim hundreds of megabytes of heap. A put evicts from the least recently used end until
+     * the total fits again; an entry larger than the whole budget is never stored, because it would
+     * evict everything and buy back nothing.
+     *
+     * Every method holds the cache's own monitor, so the access-order relinking inside {@code get}
+     * never runs concurrently with a {@code put}. A budget of zero or less caches nothing and still
+     * serves every render.
+     */
+    static final class ByteBoundedCache {
+
+        private final long maxBytes;
+        private final Map<String, PreparedBackground> entries = new LinkedHashMap<>(16, 0.75f, true);
+        private long heldBytes;
+
+        ByteBoundedCache(long maxBytes) {
+            this.maxBytes = maxBytes;
+        }
+
+        synchronized PreparedBackground get(String key) {
+            return entries.get(key);
+        }
+
+        synchronized void put(String key, PreparedBackground value) {
+            long size = value.bytes().length;
+            if (size > maxBytes) {
+                return;
             }
-        });
+            PreparedBackground previous = entries.put(key, value);
+            if (previous != null) {
+                heldBytes -= previous.bytes().length;
+            }
+            heldBytes += size;
+            Iterator<PreparedBackground> leastRecentlyUsedFirst = entries.values().iterator();
+            while (heldBytes > maxBytes && leastRecentlyUsedFirst.hasNext()) {
+                heldBytes -= leastRecentlyUsedFirst.next().bytes().length;
+                leastRecentlyUsedFirst.remove();
+            }
+        }
+
+        synchronized long heldBytes() {
+            return heldBytes;
+        }
+
     }
 
     /**

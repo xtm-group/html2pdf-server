@@ -25,7 +25,7 @@ public class InlineImageRewriterTest {
     private static final String RESOURCE_PATH = "/tmp/f829a2090fea6";
 
     private static InlineImageRewriter rewriter(boolean enabled) {
-        return new InlineImageRewriter(new BackgroundImageOptimizer(enabled, 12_000_000L, 8_700_000L, 30_000_000L, 16));
+        return new InlineImageRewriter(new BackgroundImageOptimizer(enabled, 12_000_000L, 8_700_000L, 30_000_000L, BackgroundImageOptimizer.DEFAULT_MAX_CACHE_BYTES));
     }
 
     /**
